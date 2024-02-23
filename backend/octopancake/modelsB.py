@@ -1,100 +1,142 @@
-from sqlalchemy import Column, Integer, String, ForeignKey, UniqueConstraint, CheckConstraint
+import enum
+
+from sqlalchemy import Column, Enum, ForeignKey, Integer, String, UniqueConstraint, CheckConstraint, event
 from sqlalchemy.ext.declarative import declarative_base
+from sqlalchemy.orm import relationship
 from sqlalchemy import create_engine
 from sqlalchemy.orm import sessionmaker
 
+
 Base = declarative_base()
 
-class ButtonBoard(Base):
-    __tablename__ = 'button_board'
+class LayoutType(enum.Enum):
+    GRID_8x4 = "8x4_grid"
+    CUSTOM = "custom"
 
+
+class ButtonBoard(Base):
+    __tablename__ = "button_board"
     id = Column(Integer, primary_key=True)
     name = Column(String)
-    layout_type = Column(String)
+    layout_type = Column(Enum(LayoutType))
 
-    # For custom layouts
-    layout_rows = Column(Integer)
-    layout_columns = Column(Integer)
+    # For custom layouts:
+    layout_width = Column(Integer)
+    layout_height = Column(Integer)
+
+    buttons = relationship("ButtonConfig", back_populates="board")
+
+    # undesirable constraint.
+    __table_args__ = (
+        UniqueConstraint(
+            "layout_type", "layout_width",
+            "layout_height", name="unique_custom_layout",
+        ),
+    )
+
+
+class ButtonFunctionalityType(enum.Enum):
+    APP_SWITCH = "app_switch"
+    RUN_SCRIPT = "run_script"
+    PAGE_SWITCH = "page_switch"
+
 
 class ButtonConfig(Base):
-    __tablename__ = 'button_config'
-
+    __tablename__ = "button_config"
     id = Column(Integer, primary_key=True)
-    button_board_id = Column(Integer, ForeignKey('button_board.id'))
+    button_board_id = Column(Integer, ForeignKey("button_board.id"))
     position_x = Column(Integer)
     position_y = Column(Integer)
     image_filename = Column(String, CheckConstraint("image_filename NOT LIKE '%/%'"))
 
-    # Ensure that no two buttons on the same board share coordinates
-    __table_args__ = (
-        UniqueConstraint('button_board_id', 'position_x', 'position_y'),
+    functionality_type = Column(Enum(ButtonFunctionalityType))
+    functionality_data = relationship(
+        "ButtonFunctionalityData", uselist=False,
+        back_populates="button_config"
     )
 
-class FunctionalityType(Base):
-    __tablename__ = 'functionality_type'
+    board = relationship("ButtonBoard", back_populates="buttons")
+    # named constraint :D
+    __table_args__ = (UniqueConstraint("button_board_id", "position_x", "position_y", name="unique_button_position"),)
 
+
+class ButtonFunctionalityData(Base):
+    __tablename__ = "button_functionality_data"
     id = Column(Integer, primary_key=True)
-    name = Column(String, unique=True)
+    button_config_id = Column(Integer, ForeignKey("button_config.id"))
 
-class FunctionalityAssignment(Base):
-    __tablename__ = 'functionality_assignment'
+    app_name = Column(String)
+    script_path = Column(String)
+    target_board_id = Column(Integer, ForeignKey("button_board.id"))
 
-    id = Column(Integer, primary_key=True)
-    button_config_id = Column(Integer, ForeignKey('button_config.id'))
-    functionality_type_id = Column(Integer, ForeignKey('functionality_type.id'))
-    app_name = Column(String)  # If applicable
-    script_path = Column(String)  # If applicable
-    target_button_board_id = Column(Integer, ForeignKey('button_board.id'))  # If 'page_switch'
-
-# Database Setup
-engine = create_engine('sqlite:///data.sqlite', echo=False)  
-Base.metadata.create_all(engine)
-
-# Session 
-Session = sessionmaker(bind=engine)
-session = Session()
+    button_config = relationship("ButtonConfig", back_populates="functionality_data")
+    target_board = relationship("ButtonBoard")
 
 
-# continues to use strings instead of enums
-board = ButtonBoard(name="My Board", layout_type="8x4")
-session.add(board)
+if __name__ == "__main__":
+    engine = create_engine("sqlite:///data.sqlite")#, echo=True)
+    # enable foreign key constraint checking
+    @event.listens_for(engine, "connect")
+    def set_sqlite_pragma(dbapi_connection, connection_record):
+        cursor = dbapi_connection.cursor()
+        cursor.execute("PRAGMA foreign_keys=ON")
+        cursor.close()
+    # # enable WAL mode
+    # @event.listens_for(engine, "connect")
+    # def set_sqlite_pragma2(dbapi_connection, connection_record):
+    #     cursor = dbapi_connection.cursor()
+    #     cursor.execute("PRAGMA journal_mode=WAL")
+    #     cursor.close()
+    # # enable case-sensitive LIKE
+    # @event.listens_for(engine, "connect")
+    # def set_sqlite_pragma3(dbapi_connection, connection_record):
+    #     cursor = dbapi_connection.cursor()
+    #     cursor.execute("PRAGMA case_sensitive_like=ON;")
+    #     cursor.close()
 
-button_config = ButtonConfig(
-                    button_board_id=board.id, 
-                    position_x=0, 
-                    position_y=0, 
-                    image_filename="button_image.png")
-session.add(button_config)
+    Base.metadata.create_all(engine)
+
+    Session = sessionmaker(bind=engine)
+    session = Session()
+
+    board = ButtonBoard(name="My Board", layout_type=LayoutType.GRID_8x4)
+    button1 = ButtonConfig(
+        board=board,
+        position_x=0,
+        position_y=0,
+        image_filename="button1.png",
+        functionality_type=ButtonFunctionalityType.APP_SWITCH,
+        functionality_data=ButtonFunctionalityData(app_name="Chrome")
+    )
+    button2 = ButtonConfig(
+        board=board,
+        position_x=1,
+        position_y=0,
+        image_filename="button2.png",
+        functionality_type=ButtonFunctionalityType.PAGE_SWITCH,
+        functionality_data=ButtonFunctionalityData(target_board_id=2)
+    )
+    session.add_all([board, button1, button2])
+    session.commit()
+    session.refresh(button2)
+    target_board: ButtonBoard = button2.functionality_data.target_board
+    print("target_board id:", target_board)
 
 
-func_type = FunctionalityType(name="app_switch")
-session.add(func_type)
-
-func_assignment = FunctionalityAssignment(
-                    button_config_id=button_config.id, 
-                    functionality_type_id=func_type.id, 
-                    app_name="Calculator")
-
-session.add(func_assignment)
-session.commit()
-
-# +--------------+----+----------+-------------+-------------+----------------+
-# | button_board | id |   name   | layout_type | layout_rows | layout_columns |
-# +--------------+----+----------+-------------+-------------+----------------+
-# |              | 1  | My Board | 8x4         |             |                |
-# +--------------+----+----------+-------------+-------------+----------------+
-# +--------------------+----+------------+
-# | functionality_type | id |    name    |
-# +--------------------+----+------------+
-# |                    | 1  | app_switch |
-# +--------------------+----+------------+
-# +---------------+----+-----------------+------------+------------+------------------+
-# | button_config | id | button_board_id | position_x | position_y |  image_filename  |
-# +---------------+----+-----------------+------------+------------+------------------+
-# |               | 1  |                 | 0          | 0          | button_image.png |
-# +---------------+----+-----------------+------------+------------+------------------+
-# +--------------------------+----+------------------+-----------------------+------------+-------------+------------------------+
-# | functionality_assignment | id | button_config_id | functionality_type_id |  app_name  | script_path | target_button_board_id |
-# +--------------------------+----+------------------+-----------------------+------------+-------------+------------------------+
-# |                          | 1  |                  |                       | Calculator |             |                        |
-# +--------------------------+----+------------------+-----------------------+------------+-------------+------------------------+
+# +--------------+----+----------+-------------+--------------+---------------+
+# | button_board | id |   name   | layout_type | layout_width | layout_height |
+# +--------------+----+----------+-------------+--------------+---------------+
+# |              | 1  | My Board | GRID_8x4    |              |               |
+# +--------------+----+----------+-------------+--------------+---------------+
+# +---------------+----+-----------------+------------+------------+----------------+--------------------+
+# | button_config | id | button_board_id | position_x | position_y | image_filename | functionality_type |
+# +---------------+----+-----------------+------------+------------+----------------+--------------------+
+# |               | 1  | 1               | 0          | 0          | button1.png    | APP_SWITCH         |
+# |               | 2  | 1               | 1          | 0          | button2.png    | PAGE_SWITCH        |
+# +---------------+----+-----------------+------------+------------+----------------+--------------------+
+# +---------------------------+----+------------------+----------+-------------+-----------------+
+# | button_functionality_data | id | button_config_id | app_name | script_path | target_board_id |
+# +---------------------------+----+------------------+----------+-------------+-----------------+
+# |                           | 1  | 1                | Chrome   |             |                 |
+# |                           | 2  | 2                |          |             | 2               |
+# +---------------------------+----+------------------+----------+-------------+-----------------+
