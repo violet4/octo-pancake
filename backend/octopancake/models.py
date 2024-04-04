@@ -60,17 +60,42 @@ class ButtonConfig(Base):
     __table_args__ = (UniqueConstraint("button_board_id", "position_x", "position_y", name="unique_button_position"),)
 
 
+
+
+
+
+
+
+
+
 class ButtonFunctionalityData(Base):
     __tablename__ = "button_functionality_data"
     id = Column(Integer, primary_key=True)
     button_config_id = Column(Integer, ForeignKey("button_config.id"))
-
-    app_name = Column(String)
-    script_path = Column(String)
-    target_board_id = Column(Integer, ForeignKey("button_board.id"))
+    functionality_type = Column(Enum(ButtonFunctionalityType))
 
     button_config = relationship("ButtonConfig", back_populates="functionality_data")
-    target_board = relationship("ButtonBoard")
+
+class AppSwitchData(Base):
+    __tablename__ = "app_switch_data"
+    id = Column(Integer, ForeignKey(ButtonFunctionalityData.id), primary_key=True)
+    app_name = Column(String)
+
+class ScriptRunData(Base):
+    __tablename__ = "script_run_data"
+    id = Column(Integer, ForeignKey(ButtonFunctionalityData.id), primary_key=True)
+    script_path = Column(String)
+
+
+def handle_button_press(button_config):
+    func_data = button_config.functionality_data
+    if func_data.functionality_type == ButtonFunctionalityType.APP_SWITCH:
+        app_switch_data = session.query(AppSwitchData).filter_by(id=func_data.id).one()
+        launch_app(app_switch_data.app_name)
+    elif func_data.functionality_type == ButtonFunctionalityType.RUN_SCRIPT:
+        script_run_data = session.query(ScriptRunData).filter_by(id=func_data.id).one()
+        run_script(script_run_data.script_path)
+
 
 
 if __name__ == "__main__":
@@ -121,7 +146,6 @@ if __name__ == "__main__":
     session.refresh(button2)
     target_board: ButtonBoard = button2.functionality_data.target_board
     print("target_board id:", target_board)
-
 
 # +--------------+----+----------+-------------+--------------+---------------+
 # | button_board | id |   name   | layout_type | layout_width | layout_height |
